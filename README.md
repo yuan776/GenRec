@@ -186,7 +186,27 @@ item_embeddings = normalize(item_embeddings)  # unit sphere
 
 For a research prototype, SVD provides the best quality/complexity tradeoff. The paper's production system uses Qwen2.5-VL multimodal embeddings, which could be substituted later.
 
-**Solution 2: Dead Code Revival**
+**Solution 2: Balanced K-means Initialization**
+
+Standard K-means can itself produce degenerate initial centroids where some clusters are empty. Balanced K-means adds a capacity constraint: each centroid is assigned at most ⌈N/K⌉ points.
+
+```python
+# For each iteration:
+capacity = ceil(N / K)
+# Sort points by confidence (closest distance to preferred centroid)
+# Assign greedily: each point goes to nearest centroid with remaining capacity
+```
+
+Combined with **K-means++ seeding** (initialize centroids spread apart by distance-weighted sampling), this guarantees:
+- Every codebook entry starts with ~N/K=47 assigned items (for 12K items, 256 codes)
+- No empty centroids at initialization → EMA updates maintain utilization
+- Residual quantization at levels 2 and 3 also starts balanced (each level quantizes a well-distributed residual)
+
+**Why balanced over standard K-means**: Standard K-means tends toward power-law distributions — a few large clusters dominate. For quantization codebooks, uniform utilization is critical because:
+- Maximum information capacity: 256 codes × 3 levels = 256³ = 16.7M unique IDs (only achievable if all codes are used)
+- The LLM needs to discriminate between codes equally — if 90% of items share one code, the model learns to always predict that code
+
+**Solution 3: Dead Code Revival**
 
 During EMA codebook updates, we detect codes with `cluster_size < 1.0` (effectively unused) and reinitialize them:
 ```python
@@ -201,6 +221,11 @@ self.embedding.weight.data[dead_indices] = z[rand_indices].detach()
 - Reinitialized codes are placed directly in the data manifold (from batch samples), so they immediately start receiving assignments
 - Combined with EMA updates, the revived codes quickly specialize to their local region
 - This is a standard technique from VQ-VAE-2 (Razavi et al., 2019) and SoundStream (Zeghidour et al., 2021)
+
+**All three mechanisms work together**:
+1. SVD embeddings → items have real cluster structure in input space
+2. Balanced K-means → codebook starts with uniform utilization
+3. Dead code revival → maintains utilization if codes drift during training
 
 **Expected Results After Fix**:
 - Codebook utilization: 200-256 codes used per codebook (was 1-2)

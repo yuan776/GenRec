@@ -212,39 +212,100 @@ class RQVAE(nn.Module):
         _, indices, _ = self.quantize(z)
         return indices
 
-    def init_codebook_with_kmeans(self, data: torch.Tensor, n_iter: int = 20):
+    def init_codebook_with_kmeans(self, data: torch.Tensor, n_iter: int = 20, balanced: bool = True):
         """
-        Initialize codebook embeddings using K-means clustering.
+        Initialize codebook embeddings using balanced K-means clustering.
+
+        Balanced K-means ensures each codebook entry is assigned roughly the same
+        number of items (N/K), preventing collapse during initialization.
 
         Args:
             data: [N, input_dim] training data
             n_iter: number of K-means iterations
+            balanced: if True, use balanced assignment (capacity constraint per centroid)
         """
         with torch.no_grad():
             z = self.encode(data)
             residual = z
 
             for quantizer in self.quantizers:
-                # Simple K-means initialization
-                indices = torch.randperm(z.size(0))[:quantizer.codebook_size]
-                centroids = residual[indices].clone()
+                N = residual.size(0)
+                K = quantizer.codebook_size
+                # Initialize centroids with K-means++
+                centroids = self._kmeans_plus_plus_init(residual, K)
 
                 for _ in range(n_iter):
                     distances = (
                         residual.pow(2).sum(-1, keepdim=True)
                         + centroids.pow(2).sum(-1)
                         - 2 * residual @ centroids.t()
-                    )
-                    assignments = distances.argmin(dim=-1)
+                    )  # [N, K]
 
-                    for k in range(quantizer.codebook_size):
+                    if balanced:
+                        # Balanced assignment: each centroid gets at most ceil(N/K) points
+                        assignments = self._balanced_assignment(distances, K)
+                    else:
+                        assignments = distances.argmin(dim=-1)
+
+                    # Update centroids
+                    for k in range(K):
                         mask = assignments == k
                         if mask.sum() > 0:
                             centroids[k] = residual[mask].mean(dim=0)
 
                 quantizer.embedding.weight.data.copy_(centroids)
                 quantizer.ema_embed.data.copy_(centroids)
+                quantizer.cluster_size.data.fill_(N / K)
 
-                # Update residual
+                # Update residual using balanced assignments
                 quantized = quantizer.embedding(assignments)
                 residual = residual - quantized
+
+    def _kmeans_plus_plus_init(self, data: torch.Tensor, K: int) -> torch.Tensor:
+        """K-means++ initialization for better initial centroids."""
+        N, D = data.shape
+        centroids = torch.zeros(K, D, device=data.device)
+        # First centroid: random
+        idx = torch.randint(N, (1,)).item()
+        centroids[0] = data[idx]
+
+        for k in range(1, K):
+            # Distances to nearest existing centroid
+            dists = torch.cdist(data, centroids[:k]).min(dim=1).values  # [N]
+            # Sample proportional to distance squared
+            probs = dists.pow(2)
+            probs = probs / probs.sum()
+            idx = torch.multinomial(probs, 1).item()
+            centroids[k] = data[idx]
+
+        return centroids
+
+    def _balanced_assignment(self, distances: torch.Tensor, K: int) -> torch.Tensor:
+        """
+        Balanced assignment: assign each point to nearest centroid subject to
+        capacity constraint (each centroid gets at most ceil(N/K) points).
+
+        Uses greedy assignment sorted by confidence (distance gap).
+        """
+        N = distances.size(0)
+        capacity = (N + K - 1) // K  # ceil(N/K)
+
+        # Sort points by how "certain" they are (smallest distance to best centroid)
+        min_dists, preferred = distances.min(dim=1)
+        order = min_dists.argsort()  # most confident first
+
+        assignments = torch.full((N,), -1, dtype=torch.long, device=distances.device)
+        counts = torch.zeros(K, dtype=torch.long, device=distances.device)
+
+        for idx in order:
+            idx = idx.item()
+            # Find nearest centroid that still has capacity
+            sorted_centroids = distances[idx].argsort()
+            for k in sorted_centroids:
+                k = k.item()
+                if counts[k] < capacity:
+                    assignments[idx] = k
+                    counts[k] += 1
+                    break
+
+        return assignments
