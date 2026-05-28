@@ -354,12 +354,14 @@ class GenRec(nn.Module):
                 inputs_embeds=inputs_embeds,
                 attention_mask=attention_mask,
                 labels=labels,
+                use_cache=False,
             )
         else:
             outputs = self.model(
                 input_ids=input_ids,
                 attention_mask=attention_mask,
                 labels=labels,
+                use_cache=False,
             )
 
         return {"loss": outputs.loss, "logits": outputs.logits}
