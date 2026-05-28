@@ -153,6 +153,60 @@ JD.com has real pagination data, but Amazon datasets don't. We simulate pages by
 - Ordering them by interaction intensity if metadata available, otherwise chronologically
 - This still provides the denser gradient benefit even without real page data
 
+### Handling RQVAE Codebook Collapse
+
+**Problem**: During RQVAE training, codebook collapse occurs when only 1-2 out of 256 codes are used per codebook, resulting in ~99.97% collision rate. This makes Semantic IDs useless for recommendation since nearly all items map to the same code.
+
+**Root Causes Identified**:
+1. **Random item embeddings lack structure** — Standard normal vectors in 64D are roughly equidistant from each other. After the encoder projects them to latent space, they all map to the same region, so a single codebook entry "wins" every assignment.
+2. **Dead codes never recover** — Once a codebook entry stops receiving assignments, the EMA update with decay=0.99 causes it to drift further from the data distribution, making it permanently unused.
+
+**Solution 1: SVD-based Collaborative Filtering Embeddings**
+
+Instead of random embeddings, we compute item representations via truncated SVD on the user-item interaction matrix:
+```python
+U, S, Vt = svds(interaction_matrix, k=embedding_dim)
+item_embeddings = Vt.T * sqrt(S)  # [num_items, dim]
+item_embeddings = normalize(item_embeddings)  # unit sphere
+```
+
+**Why this works**:
+- SVD captures the latent collaborative filtering structure: items bought by similar users get similar embeddings
+- The resulting vectors have natural cluster structure (items form communities/categories)
+- Unit-sphere normalization ensures all items are at equal distance from origin, preventing a single centroid from dominating
+- With real structure, K-means initialization produces well-separated centroids, and the residual quantization at each level captures increasingly fine-grained distinctions
+
+**Why this method over alternatives**:
+| Method | Pros | Cons |
+|--------|------|------|
+| Random embeddings | Simple | No structure → collapse |
+| Pretrained LLM (paper uses Qwen2.5-VL) | Best quality | Requires GPU, model download, slow |
+| Word2Vec/Item2Vec on sequences | Good structure | Needs tuning, slower than SVD |
+| **SVD on interaction matrix** | **Fast, captures real signal, no extra models** | Loses content features |
+
+For a research prototype, SVD provides the best quality/complexity tradeoff. The paper's production system uses Qwen2.5-VL multimodal embeddings, which could be substituted later.
+
+**Solution 2: Dead Code Revival**
+
+During EMA codebook updates, we detect codes with `cluster_size < 1.0` (effectively unused) and reinitialize them:
+```python
+dead_mask = self.cluster_size < 1.0
+dead_indices = dead_mask.nonzero()[0][:num_replace]
+# Replace dead codes with random samples from current batch
+self.embedding.weight.data[dead_indices] = z[rand_indices].detach()
+```
+
+**Why this works**:
+- Ensures full codebook utilization throughout training — no wasted capacity
+- Reinitialized codes are placed directly in the data manifold (from batch samples), so they immediately start receiving assignments
+- Combined with EMA updates, the revived codes quickly specialize to their local region
+- This is a standard technique from VQ-VAE-2 (Razavi et al., 2019) and SoundStream (Zeghidour et al., 2021)
+
+**Expected Results After Fix**:
+- Codebook utilization: 200-256 codes used per codebook (was 1-2)
+- Collision rate: < 0.30 (was 0.9997)
+- Each item gets a nearly unique 3-level code, enabling the LLM to distinguish between items
+
 ---
 
 ## Project Structure
