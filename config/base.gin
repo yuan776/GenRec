@@ -1,0 +1,14 @@
+# Base configuration for JDGenRec
+import src.trainers.rqvae_trainer
+import src.trainers.genrec_trainer
+
+# Dataset
+dataset.name = "amazon2014"
+dataset.data_dir = "./data"
+dataset.max_seq_len = 50
+
+# General training
+train.seed = 42
+train.device = "cuda"
+train.dtype = "bfloat16"
+train.gradient_checkpointing = True

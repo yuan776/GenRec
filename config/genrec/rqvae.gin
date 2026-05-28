@@ -1,0 +1,16 @@
+# RQVAE configuration
+include "config/base.gin"
+
+# RQVAE model
+rqvae.embedding_dim = 256
+rqvae.num_codebooks = 3
+rqvae.codebook_size = 256
+rqvae.hidden_dims = [512, 256]
+rqvae.commitment_cost = 0.25
+rqvae.kmeans_init = True
+
+# RQVAE training
+rqvae_train.epochs = 200
+rqvae_train.batch_size = 256
+rqvae_train.learning_rate = 1e-3
+rqvae_train.weight_decay = 1e-4

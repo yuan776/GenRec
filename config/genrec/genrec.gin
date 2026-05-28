@@ -1,0 +1,23 @@
+# GenRec SFT configuration
+include "config/base.gin"
+
+# Model
+MODEL_PATH = "Qwen/Qwen2.5-1.5B"
+genrec.num_codebooks = 3
+genrec.codebook_size = 256
+genrec.use_token_merger = True
+
+# Page-wise NTP
+genrec.page_size = 3
+
+# Training
+genrec_train.epochs = 50
+genrec_train.batch_size = 32
+genrec_train.learning_rate = 2e-5
+genrec_train.weight_decay = 0.01
+genrec_train.warmup_ratio = 0.01
+genrec_train.max_seq_len = 512
+
+# Evaluation
+eval.beam_width = 20
+eval.topk = 10
