@@ -176,8 +176,8 @@ class AmazonDataset:
         rows, cols = [], []
         for uid, items in self.user_sequences.items():
             for iid in items:
-                rows.append(uid - 1)  # 0-indexed
-                cols.append(iid - 1)  # 0-indexed
+                rows.append(uid)  # user IDs are 0-indexed
+                cols.append(iid - 1)  # item IDs are 1-indexed, convert to 0-indexed
 
         data = np.ones(len(rows), dtype=np.float32)
         interaction_matrix = csr_matrix(
