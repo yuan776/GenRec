@@ -161,15 +161,48 @@ class AmazonDataset:
 
     def get_item_embeddings(self, embedding_dim: int = 64) -> np.ndarray:
         """
-        Generate random item embeddings for RQVAE training.
-        In practice, these would come from a pretrained embedding model.
+        Generate item embeddings using SVD on user-item interaction matrix.
+        This captures collaborative filtering signal for meaningful RQVAE codes.
 
         Args:
             embedding_dim: dimension of item embeddings
         Returns:
             embeddings: [num_items + 1, embedding_dim] array (index 0 is padding)
         """
-        np.random.seed(42)
-        embeddings = np.random.randn(self.num_items + 1, embedding_dim).astype(np.float32)
-        embeddings[0] = 0  # padding
+        from scipy.sparse import csr_matrix
+        from scipy.sparse.linalg import svds
+
+        # Build user-item interaction matrix
+        rows, cols = [], []
+        for uid, items in self.user_sequences.items():
+            for iid in items:
+                rows.append(uid - 1)  # 0-indexed
+                cols.append(iid - 1)  # 0-indexed
+
+        data = np.ones(len(rows), dtype=np.float32)
+        interaction_matrix = csr_matrix(
+            (data, (rows, cols)), shape=(self.num_users, self.num_items)
+        )
+
+        # SVD - use min of requested dim and matrix rank limit
+        k = min(embedding_dim, min(self.num_users, self.num_items) - 1)
+        _, s, Vt = svds(interaction_matrix, k=k)
+
+        # Item embeddings = V * sqrt(S) for balanced scaling
+        item_vecs = (Vt.T * np.sqrt(s)).astype(np.float32)  # [num_items, k]
+
+        # Pad to embedding_dim if k < embedding_dim
+        if k < embedding_dim:
+            pad = np.zeros((self.num_items, embedding_dim - k), dtype=np.float32)
+            item_vecs = np.concatenate([item_vecs, pad], axis=1)
+
+        # Normalize to unit sphere for better quantization
+        norms = np.linalg.norm(item_vecs, axis=1, keepdims=True)
+        norms = np.maximum(norms, 1e-8)
+        item_vecs = item_vecs / norms
+
+        # Add padding row at index 0
+        embeddings = np.zeros((self.num_items + 1, embedding_dim), dtype=np.float32)
+        embeddings[1:] = item_vecs
+
         return embeddings

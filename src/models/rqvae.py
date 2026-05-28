@@ -66,6 +66,18 @@ class VectorQuantizer(nn.Module):
             )
             self.embedding.weight.data.copy_(self.ema_embed / cluster_size.unsqueeze(-1))
 
+            # Dead code revival: reinitialize unused codes from batch
+            dead_mask = self.cluster_size < 1.0
+            num_dead = dead_mask.sum().item()
+            if num_dead > 0 and z.size(0) > 0:
+                # Pick random samples from batch to replace dead codes
+                num_replace = min(num_dead, z.size(0))
+                rand_indices = torch.randperm(z.size(0), device=z.device)[:num_replace]
+                dead_indices = dead_mask.nonzero(as_tuple=True)[0][:num_replace]
+                self.embedding.weight.data[dead_indices] = z[rand_indices].detach()
+                self.ema_embed.data[dead_indices] = z[rand_indices].detach()
+                self.cluster_size.data[dead_indices] = 1.0
+
         # Commitment loss
         commitment_loss = self.commitment_cost * F.mse_loss(z, quantized.detach())
         # Straight-through estimator
